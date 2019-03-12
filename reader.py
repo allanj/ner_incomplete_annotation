@@ -40,7 +40,8 @@ class Reader:
                 elif self.dataset == "conll2002" or self.dataset == "ecommerce" or self.dataset == "youku":
                     x = line.split()
                     if len(x) == 1:
-                        word = ' '
+                        word = ","
+                        label = x[0]
                     else:
                         word = x[0]
                         label = x[1]
