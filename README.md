@@ -21,6 +21,10 @@ Also, put your embedding file under the data directory to run. You need to speci
 python3 hard.py --embedding_file ${PATH_TO_EMBEDDING} --dataset conll2003
 ```
 
+### Datasets
+In case you are interested in the very first version of the raw data (of the Ecommerce and Youku datasets), you can find it under `data/raw_data`. 
+You can also refer to the [supplementary](http://www.statnlp.org/research/ie/zhanming19naacl-ner-supp.pdf) to check how to categorize all the entity types.
+
 
 ### Future Work
 
