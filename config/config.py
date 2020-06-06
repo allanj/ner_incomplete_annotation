@@ -9,6 +9,7 @@ from common import Instance
 import torch
 from enum import Enum
 import os
+import time
 
 from termcolor import colored
 
@@ -105,7 +106,8 @@ class Config:
         else:
             exists = os.path.isfile(self.embedding_file)
             if not exists:
-                print(colored("[Warning] pretrain embedding file not exists, using random embedding",  'red'))
+                print(colored("[Warning] pretrain embedding file not exists, using random embedding",  'red'), flush=True)
+                time.sleep(3)
                 return None, self.embedding_dim
                 # raise FileNotFoundError("The embedding file does not exists")
         embedding_dim = -1
