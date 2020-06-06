@@ -46,12 +46,12 @@ def parse_arguments(parser):
     parser.add_argument('--l2', type=float, default=1e-8)
     parser.add_argument('--lr_decay', type=float, default=0)
     parser.add_argument('--batch_size', type=int, default=10, help="default batch size is 10 (works well)")
-    parser.add_argument('--num_epochs', type=int, default=5, help="Usually we set to 10.")
-    parser.add_argument('--train_num', type=int, default=300, help="-1 means all the data")
-    parser.add_argument('--dev_num', type=int, default=100, help="-1 means all the data")
-    parser.add_argument('--test_num', type=int, default=100, help="-1 means all the data")
-    parser.add_argument('--entity_keep_ratio', type=float, default=0.5, help="the percentage of entities to be kept", choices=np.arange(0, 1.1, 0.1))
-    parser.add_argument('--num_outer_iterations', type= int , default=2, help="Number of outer iterations for cross validation")
+    parser.add_argument('--num_epochs', type=int, default=100, help="Usually we set to 10.")
+    parser.add_argument('--train_num', type=int, default=-1, help="-1 means all the data")
+    parser.add_argument('--dev_num', type=int, default=-1, help="-1 means all the data")
+    parser.add_argument('--test_num', type=int, default=-1, help="-1 means all the data")
+    parser.add_argument('--entity_keep_ratio', type= float, default=0.5, help="the percentage of entities to be kept", choices=np.arange(0, 1.1, 0.1))
+    parser.add_argument('--num_outer_iterations', type= int , default= 10, help="Number of outer iterations for cross validation")
 
 
     ##model hyperparameter

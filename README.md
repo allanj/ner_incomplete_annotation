@@ -16,17 +16,17 @@ Put your dataset under the data folder. You can obtain the `conll2003` and `conl
 
 Also, put your embedding file under the data directory to run. You need to specify the path for the embedding file.
 
-### Running our hard approach
+### Running our approaches
 ```bash
-python3 hard.py --embedding_file ${PATH_TO_EMBEDDING} --dataset conll2003
+python3 main.py --embedding_file ${PATH_TO_EMBEDDING} --dataset conll2003 --variant hard
 ```
-
-
+Change `hard` to `soft` for our soft variant. 
+(This version actually also supports using contextual representation. But I'm still testing during this weekend.)
 
 
 ### Future Work
 
-- [ ] add soft approach
+- [x] add soft approach
 - [ ] add other baselines.
 
 
