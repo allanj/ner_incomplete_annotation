@@ -30,6 +30,7 @@ class NNCRF(nn.Module):
                     chars: torch.Tensor,
                     char_seq_lens: torch.Tensor,
                     annotation_mask : torch.Tensor,
+                    marginals: torch.Tensor,
                     tags: torch.Tensor) -> torch.Tensor:
         """
         Calculate the negative loglikelihood.
@@ -55,7 +56,13 @@ class NNCRF(nn.Module):
         :param batchInput:
         :return:
         """
-        wordSeqTensor, wordSeqLengths, batch_context_emb, charSeqTensor, charSeqLengths, annotation_mask, tagSeqTensor = batchInput
+        wordSeqTensor, wordSeqLengths, batch_context_emb, charSeqTensor, charSeqLengths, annotation_mask, marginals, tagSeqTensor = batchInput
         features = self.encoder(wordSeqTensor, wordSeqLengths, batch_context_emb,charSeqTensor,charSeqLengths)
         bestScores, decodeIdx = self.inferencer.decode(features, wordSeqLengths, annotation_mask)
         return bestScores, decodeIdx
+
+    def get_marginal(self, batchInput: Tuple) -> torch.Tensor:
+        wordSeqTensor, wordSeqLengths, batch_context_emb, charSeqTensor, charSeqLengths, annotation_mask, marginals, tagSeqTensor = batchInput
+        features = self.encoder(wordSeqTensor, wordSeqLengths, batch_context_emb, charSeqTensor, charSeqLengths)
+        marginals = self.inferencer.compute_constrained_marginal(features, wordSeqLengths, annotation_mask)
+        return marginals

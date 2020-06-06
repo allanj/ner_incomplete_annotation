@@ -30,11 +30,38 @@ class LinearCRF(nn.Module):
         init_transition[self.end_idx, :] = -10000.0
         init_transition[:, self.pad_idx] = -10000.0
         init_transition[self.pad_idx, :] = -10000.0
+        self.add_constraint_for_iobes(init_transition)
 
-        self.transition = nn.Parameter(init_transition)
+        self.transition = nn.Parameter(init_transition).to(self.device)
+
+    def add_constraint_for_iobes(self, transition: torch.Tensor):
+        print("[Info] Adding IOBES constraints")
+        ## add constraint:
+        for prev_label in self.labels:
+            if prev_label == START or prev_label == STOP or prev_label == PAD:
+                continue
+            for next_label in self.labels:
+                if next_label == START or next_label == STOP or next_label == PAD:
+                    continue
+                if prev_label == "O" and (next_label.startswith("I-") or next_label.startswith("E-")):
+                    transition[self.label2idx[prev_label], self.label2idx[next_label]] = -10000.0
+                if prev_label.startswith("B-") or prev_label.startswith("I-"):
+                    if next_label.startswith("O") or next_label.startswith("B-") or next_label.startswith("S-"):
+                        transition[self.label2idx[prev_label], self.label2idx[next_label]] = -10000.0
+                    elif prev_label[2:] != next_label[2:]:
+                        transition[self.label2idx[prev_label], self.label2idx[next_label]] = -10000.0
+                if prev_label.startswith("S-") or prev_label.startswith("E-"):
+                    if next_label.startswith("I-") or next_label.startswith("E-"):
+                        transition[self.label2idx[prev_label], self.label2idx[next_label]] = -10000.0
+        ##constraint for start and end
+        for label in self.labels:
+            if label.startswith("I-") or label.startswith("E-"):
+                transition[self.start_idx, self.label2idx[label]] = -10000.0
+            if label.startswith("I-") or label.startswith("B-"):
+                transition[self.label2idx[label], self.end_idx] = -10000.0
 
     @overrides
-    def forward(self, lstm_scores, word_seq_lens, tags, mask):
+    def forward(self, lstm_scores, word_seq_lens, tags, mask, marginals = None):
         """
         Calculate the negative log-likelihood
         :param lstm_scores:
@@ -45,7 +72,8 @@ class LinearCRF(nn.Module):
         """
         all_scores=  self.calculate_all_scores(lstm_scores= lstm_scores)
         unlabed_score = self.forward_unlabeled(all_scores, word_seq_lens)
-        labeled_score = self.forward_labeled(all_scores, word_seq_lens, tags, mask)
+        labeled_score = self.forward_labeled(all_scores, word_seq_lens, tags, mask) if marginals is None else \
+            self.forward_labeled_with_marginal(all_scores, word_seq_lens, marginals)
         return unlabed_score, labeled_score
 
     def forward_unlabeled(self, all_scores: torch.Tensor, word_seq_lens: torch.Tensor) -> torch.Tensor:
@@ -68,6 +96,36 @@ class LinearCRF(nn.Module):
 
         ### batch_size x label_size
         last_alpha = torch.gather(alpha, 1, word_seq_lens.view(batch_size, 1, 1).expand(batch_size, 1, self.label_size)-1).view(batch_size, self.label_size)
+        last_alpha += self.transition[:, self.end_idx].view(1, self.label_size).expand(batch_size, self.label_size)
+        last_alpha = log_sum_exp_pytorch(last_alpha.view(batch_size, self.label_size, 1)).view(batch_size)
+
+        return torch.sum(last_alpha)
+
+    def forward_labeled_with_marginal(self, all_scores: torch.Tensor, word_seq_lens: torch.Tensor, marginals: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the scores with the forward algorithm. Basically calculating the normalization term
+        :param all_scores: (batch_size x max_seq_len x num_labels) from lstm scores.
+        :param word_seq_lens: (batch_size)
+        :param marginals: shape (batch x max_seq_len x num_labels), the log-space score of the marginal probability
+        :return: (batch_size) for the normalization scores
+        """
+        batch_size = all_scores.size(0)
+        seq_len = all_scores.size(1)
+        alpha = torch.zeros(batch_size, seq_len, self.label_size).to(self.device)
+
+        alpha[:, 0, :] = all_scores[:, 0, self.start_idx, :]  ## the first position of all labels = (the transition from start - > all labels) + current emission.
+        alpha[:, 0, :] += marginals[:, 0, :]
+
+        for word_idx in range(1, seq_len):
+            ## batch_size, self.label_size, self.label_size
+            before_log_sum_exp = alpha[:, word_idx - 1, :].view(batch_size, self.label_size, 1).expand(batch_size, self.label_size, self.label_size) \
+                                 + all_scores[:, word_idx, :, :]
+            alpha[:, word_idx, :] = log_sum_exp_pytorch(before_log_sum_exp)
+            alpha[:, word_idx, :] += marginals[:, word_idx, :]
+
+        ### batch_size x label_size
+        last_alpha = torch.gather(alpha, 1,  word_seq_lens.view(batch_size, 1, 1).
+                                  expand(batch_size, 1, self.label_size) - 1).view(batch_size, self.label_size)
         last_alpha += self.transition[:, self.end_idx].view(1, self.label_size).expand(batch_size, self.label_size)
         last_alpha = log_sum_exp_pytorch(last_alpha.view(batch_size, self.label_size, 1)).view(batch_size)
 
@@ -111,14 +169,14 @@ class LinearCRF(nn.Module):
                  lstm_scores.view(batch_size, seq_len, 1, self.label_size).expand(batch_size, seq_len, self.label_size, self.label_size)
         return scores
 
-    def decode(self, features, wordSeqLengths, annotation_mask = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def decode(self, lstm_scores: torch.Tensor, sent_len: torch.Tensor, annotation_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Decode the batch input
-        :param batchInput:
-        :return:
+        :param lstm_scores: (batch_size, sent_len, num_labels)
+        :param sent_len: (batch_size)
+        :param annotation_mask: (batch_size, sent_len, num_labels)
         """
-        all_scores = self.calculate_all_scores(features)
-        bestScores, decodeIdx = self.constrainted_viterbi_decode(all_scores, wordSeqLengths, annotation_mask)
+        all_scores = self.calculate_all_scores(lstm_scores)
+        bestScores, decodeIdx = self.constrainted_viterbi_decode(all_scores, sent_len, annotation_mask)
         return bestScores, decodeIdx
 
     def constrainted_viterbi_decode(self, all_scores: torch.Tensor, word_seq_lens: torch.Tensor, annotation_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -166,3 +224,61 @@ class LinearCRF(nn.Module):
             decodeIdx[:, distance2Last + 1] = torch.gather(lastNIdxRecord, 1, decodeIdx[:, distance2Last].view(batchSize, 1)).view(batchSize)
 
         return bestScores, decodeIdx
+
+    def compute_constrained_marginal(self, lstm_scores: torch.Tensor, word_seq_lens: torch.Tensor, annotation_mask: torch.LongTensor) -> torch.Tensor:
+        """
+        Note: This function is not used unless you want to compute the marginal probability
+        Forward-backward algorithm to compute the marginal probability (in log space)
+        Basically, we follow the `backward` algorithm to obtain the backward scores.
+        :param lstm_scores:   shape: (batch_size, sent_len, label_size) NOTE: the score from LSTMs, not `all_scores` (which add up the transtiion)
+        :param word_seq_lens: shape: (batch_size,)
+        :param annotation_mask: shape: (batch_size, sent_len, label_size)
+        :return: Marginal score. If you want probability, you need to use `torch.exp` to convert it into probability
+                shape: (batch_size, sent_len, label_size)
+        """
+        batch_size = lstm_scores.size(0)
+        seq_len = lstm_scores.size(1)
+        mask = annotation_mask.float().log()
+        alpha = torch.zeros(batch_size, seq_len, self.label_size).to(self.device)
+        beta = torch.zeros(batch_size, seq_len, self.label_size).to(self.device)
+
+        scores = self.transition.view(1, 1, self.label_size, self.label_size).expand(batch_size, seq_len, self.label_size, self.label_size) + \
+                 lstm_scores.view(batch_size, seq_len, 1, self.label_size).expand(batch_size, seq_len, self.label_size, self.label_size)
+        ## reverse the view of computing the score. we look from behind
+        rev_score = self.transition.transpose(0, 1).view(1, 1, self.label_size, self.label_size).expand(batch_size, seq_len, self.label_size, self.label_size) + \
+                    lstm_scores.view(batch_size, seq_len, 1, self.label_size).expand(batch_size, seq_len, self.label_size, self.label_size)
+
+        perm_idx = torch.zeros(batch_size, seq_len).to(self.device)
+        for batch_idx in range(batch_size):
+            perm_idx[batch_idx][:word_seq_lens[batch_idx]] = torch.range(word_seq_lens[batch_idx] - 1, 0, -1)
+        perm_idx = perm_idx.long()
+        for i, length in enumerate(word_seq_lens):
+            rev_score[i, :length] = rev_score[i, :length][perm_idx[i, :length]]
+
+        alpha[:, 0, :] = scores[:, 0, self.start_idx, :]  ## the first position of all labels = (the transition from start - > all labels) + current emission.
+        alpha[:, 0, :] += mask[:, 0, :]
+        beta[:, 0, :] = rev_score[:, 0, self.end_idx, :]
+        for word_idx in range(1, seq_len):
+            before_log_sum_exp = alpha[:, word_idx - 1, :].view(batch_size, self.label_size, 1).expand(batch_size, self.label_size, self.label_size) \
+                                 + scores[ :, word_idx, :, :]
+            alpha[:, word_idx, :] = log_sum_exp_pytorch(before_log_sum_exp)
+            alpha[:, word_idx, :] += mask[:, word_idx, :]
+            before_log_sum_exp = beta[:, word_idx - 1, :].view(batch_size, self.label_size, 1).expand(batch_size, self.label_size, self.label_size) \
+                                 + rev_score[ :, word_idx, :, :]
+            beta[:, word_idx, :] = log_sum_exp_pytorch(before_log_sum_exp)
+            beta[:, word_idx, :] += mask[:, word_idx, :]
+
+        ### batch_size x label_size
+        last_alpha = torch.gather(alpha, 1,  word_seq_lens.view(batch_size, 1, 1).
+                                  expand(batch_size, 1, self.label_size) - 1).view(batch_size, self.label_size)
+        last_alpha += self.transition[:, self.end_idx].view(1, self.label_size).expand(batch_size, self.label_size)
+        last_alpha = log_sum_exp_pytorch(last_alpha.view(batch_size, self.label_size, 1)).view(batch_size, 1, 1).\
+            expand(batch_size, seq_len, self.label_size)
+
+        ## Because we need to use the beta variable later, we need to reverse back
+        for i, length in enumerate(word_seq_lens):
+            beta[i, :length] = beta[i, :length][perm_idx[i, :length]]
+
+        # `alpha + beta - last_alpha` is the standard way to obtain the marginal
+        # However, we have two emission scores overlap at each position, thus, we need to subtract one emission score
+        return alpha + beta - last_alpha - lstm_scores

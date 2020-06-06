@@ -46,15 +46,16 @@ def parse_arguments(parser):
     parser.add_argument('--l2', type=float, default=1e-8)
     parser.add_argument('--lr_decay', type=float, default=0)
     parser.add_argument('--batch_size', type=int, default=10, help="default batch size is 10 (works well)")
-    parser.add_argument('--num_epochs', type=int, default=100, help="Usually we set to 10.")
-    parser.add_argument('--train_num', type=int, default=-1, help="-1 means all the data")
-    parser.add_argument('--dev_num', type=int, default=-1, help="-1 means all the data")
-    parser.add_argument('--test_num', type=int, default=-1, help="-1 means all the data")
+    parser.add_argument('--num_epochs', type=int, default=5, help="Usually we set to 10.")
+    parser.add_argument('--train_num', type=int, default=300, help="-1 means all the data")
+    parser.add_argument('--dev_num', type=int, default=100, help="-1 means all the data")
+    parser.add_argument('--test_num', type=int, default=100, help="-1 means all the data")
     parser.add_argument('--entity_keep_ratio', type=float, default=0.5, help="the percentage of entities to be kept", choices=np.arange(0, 1.1, 0.1))
-    parser.add_argument('--num_outer_iterations', type= int , default=10, help="Number of outer iterations for cross validation")
+    parser.add_argument('--num_outer_iterations', type= int , default=2, help="Number of outer iterations for cross validation")
 
 
     ##model hyperparameter
+    parser.add_argument('--variant', type=str, default="hard", choices=["hard", "soft"], help="The hard or soft variant of the model")
     parser.add_argument('--model_folder', type=str, default="english_model", help="The name to save the model files")
     parser.add_argument('--hidden_dim', type=int, default=200, help="hidden size of the LSTM")
     parser.add_argument('--dropout', type=float, default=0.5, help="dropout for embedding")
@@ -68,17 +69,12 @@ def parse_arguments(parser):
     return args
 
 
-
-
 def train_model(config: Config, train_insts: List[List[Instance]], dev_insts: List[Instance], test_insts: List[Instance]):
     train_num = sum([len(insts) for insts in train_insts])
-    print("[Training Info] number of instances: %d" % (train_num))
+    print("[Training Info] number of training instances: %d" % (train_num))
 
     dev_batches = batching_list_instances(config, dev_insts)
     test_batches = batching_list_instances(config, test_insts)
-
-    best_dev = [-1, 0]
-    best_test = [-1, 0]
 
     model_folder = config.model_folder
     res_folder = "results"
@@ -105,15 +101,19 @@ def train_model(config: Config, train_insts: List[List[Instance]], dev_insts: Li
                       dev_insts=dev_insts, dev_batches=dev_batches, model_name=model_name)
 
         # assign hard prediction to other folds
-        print("\n\n[Data Info] Assigning labels for the HARD approach")
+        if config.variant == "hard":
+            print("\n\n[Data Info] Assigning labels for the HARD approach")
+        else:
+            print("\n\n[Data Info] Performing marginal decoding to assign the marginals")
 
         for fold_id, folded_train_insts in enumerate(train_insts):
             model = NNCRF(config)
             model_name = model_names[fold_id]
             model.load_state_dict(torch.load(model_name))
-            hard_constraint_predict(config=config, model=model,
-                                    fold_batches = train_batches[1-fold_id],
-                                    folded_insts=train_insts[1 - fold_id])  ## set a new label id
+            predict_with_constraints(config=config, model=model,
+                                     fold_batches = train_batches[1-fold_id],
+                                     folded_insts= train_insts[1 - fold_id])  ## set a new label id
+
         print("\n\n")
 
         print("[Training Info] Training the final model" )
@@ -135,20 +135,31 @@ def train_model(config: Config, train_insts: List[List[Instance]], dev_insts: Li
         evaluate_model(config, model, test_batches, "test", test_insts)
         write_results(res_name, test_insts)
 
-def hard_constraint_predict(config: Config, model: NNCRF, fold_batches: List[Tuple], folded_insts:List[Instance], model_type:str = "hard"):
+
+def predict_with_constraints(config: Config, model: NNCRF, fold_batches: List[Tuple], folded_insts:List[Instance]):
     batch_id = 0
     batch_size = config.batch_size
     model.eval()
     for batch in fold_batches:
         one_batch_insts = folded_insts[batch_id * batch_size:(batch_id + 1) * batch_size]
-        batch_max_scores, batch_max_ids = model.decode(batch)
-        batch_max_ids = batch_max_ids.cpu().numpy()
         word_seq_lens = batch[1].cpu().numpy()
-        for idx in range(len(batch_max_ids)):
-            length = word_seq_lens[idx]
-            prediction = batch_max_ids[idx][:length].tolist()
-            prediction = prediction[::-1]
-            one_batch_insts[idx].output_ids = prediction
+        if config.variant == "hard":
+            with torch.no_grad():
+                batch_max_scores, batch_max_ids = model.decode(batch)
+            batch_max_ids = batch_max_ids.cpu().numpy()
+            for idx in range(len(batch_max_ids)):
+                length = word_seq_lens[idx]
+                prediction = batch_max_ids[idx][:length].tolist()
+                prediction = prediction[::-1]
+                one_batch_insts[idx].output_ids = prediction
+        else:
+            ## means soft model, assign soft probabilit
+            with torch.no_grad():
+                marginals = model.get_marginal(batch)
+            marginals = marginals.cpu().numpy()
+            for idx in range(len(marginals)):
+                length = word_seq_lens[idx]
+                one_batch_insts[idx].marginals = marginals[idx, :length, :]
         batch_id += 1
 
 
@@ -208,7 +219,8 @@ def evaluate_model(config: Config, model: NNCRF, batch_insts_ids, name: str, ins
     batch_size = config.batch_size
     for batch in batch_insts_ids:
         one_batch_insts = insts[batch_id * batch_size:(batch_id + 1) * batch_size]
-        batch_max_scores, batch_max_ids = model.decode(batch)
+        with torch.no_grad():
+            batch_max_scores, batch_max_ids = model.decode(batch)
         metrics += evaluate_batch_insts(batch_insts=one_batch_insts,
                                         batch_pred_ids = batch_max_ids,
                                         batch_gold_ids=batch[-1],
@@ -254,15 +266,20 @@ def main():
     print(f"[Data Info] Removing {conf.entity_keep_ratio*100}% of entities from the training set")
 
     print("[Data Info] Removing the entities")
-    span_set = remove_entites(trains, conf)
+    ## it will return the set of removed entities (for debug purpose)
+    _ = remove_entites(trains, conf)
     # print(f"entities removed: {span_set}")
     conf.map_insts_ids(trains)
     random.shuffle(trains)
     for inst in trains:
         inst.is_prediction = [False] * len(inst.input)
+        if conf.variant == "soft":
+            inst.marginals = np.full((len(inst.input), conf.label_size), -1e10)
         for pos, label in enumerate(inst.output):
             if label == conf.O:
                 inst.is_prediction[pos] = True
+            if conf.variant == "soft":
+                inst.marginals[pos, conf.label2idx[label]] = 0
 
     num_insts_in_fold = math.ceil(len(trains) / conf.num_folds)
     trains = [trains[i * num_insts_in_fold: (i + 1) * num_insts_in_fold] for i in range(conf.num_folds)]

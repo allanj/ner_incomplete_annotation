@@ -69,8 +69,11 @@ def simple_batching(config, insts: List[Instance]) -> Tuple:
     char_seq_tensor = torch.zeros((batch_size, max_seq_len, max_char_seq_len), dtype=torch.long)
 
     annotation_mask = None
+    marginals = None
     if batch_data[0].is_prediction is not None:
         annotation_mask = torch.zeros((batch_size, max_seq_len, label_size), dtype = torch.long)
+        if config.variant == "soft":
+            marginals = torch.full([batch_size, max_seq_len, label_size], fill_value=-1e10)
 
     for idx in range(batch_size):
         word_seq_tensor[idx, :word_seq_len[idx]] = torch.LongTensor(batch_data[idx].word_ids)
@@ -88,6 +91,8 @@ def simple_batching(config, insts: List[Instance]) -> Tuple:
                 else:
                     annotation_mask[idx, pos, batch_data[idx].output_ids[pos]] = 1
             annotation_mask[idx, word_seq_len[idx]:, :] = 1
+            if config.variant == "soft":
+                marginals[idx, :word_seq_len[idx], :] = torch.FloatTensor(batch_data[idx].marginals)
 
         for word_idx in range(word_seq_len[idx]):
             char_seq_tensor[idx, word_idx, :char_seq_len[idx, word_idx]] = torch.LongTensor(batch_data[idx].char_ids[word_idx])
@@ -100,8 +105,9 @@ def simple_batching(config, insts: List[Instance]) -> Tuple:
     word_seq_len = word_seq_len.to(config.device)
     char_seq_len = char_seq_len.to(config.device)
     annotation_mask = annotation_mask.to(config.device) if annotation_mask is not None else None
+    marginals = marginals.to(config.device) if marginals is not None else None
 
-    return word_seq_tensor, word_seq_len, context_emb_tensor, char_seq_tensor, char_seq_len, annotation_mask, label_seq_tensor
+    return word_seq_tensor, word_seq_len, context_emb_tensor, char_seq_tensor, char_seq_len, annotation_mask, marginals, label_seq_tensor
 
 
 def lr_decay(config, optimizer: optim.Optimizer, epoch: int) -> optim.Optimizer:

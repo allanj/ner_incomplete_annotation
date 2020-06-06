@@ -1,1 +1,4 @@
 #data/youku/*
+.idea/*
+*.pyc
+results/*

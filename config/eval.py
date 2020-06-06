@@ -1,6 +1,5 @@
 
 import numpy as np
-from overrides import overrides
 from typing import List
 from common import Instance
 import torch
@@ -68,6 +67,7 @@ def evaluate_batch_insts(batch_insts: List[Instance],
             if output[i].startswith("S-"):
                 output_spans.add(Span(i, i, output[i][2:]))
         predict_spans = set()
+        start = -1
         for i in range(len(prediction)):
             if prediction[i].startswith("B-"):
                 start = i
